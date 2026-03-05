@@ -6,6 +6,10 @@ import io
 
 app = FastAPI()
 
+@app.get("/")
+def home():
+    return {"status": "Art Judge Server Running"}
+
 
 def load_image(file_bytes):
     image = Image.open(io.BytesIO(file_bytes)).convert("L")
