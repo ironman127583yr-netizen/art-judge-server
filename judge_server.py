@@ -6,11 +6,6 @@ import io
 import os
 import uvicorn
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("judge_server:app", host="0.0.0.0", port=port)
-
-
 app = FastAPI()
 
 @app.get("/")
@@ -78,3 +73,7 @@ async def judge(
             "value": round(valueB, 2)
         }
     }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("judge_server:app", host="0.0.0.0", port=port)
