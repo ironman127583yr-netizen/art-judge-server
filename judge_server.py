@@ -3,6 +3,13 @@ import numpy as np
 import cv2
 from PIL import Image
 import io
+import os
+import uvicorn
+
+if _name_ == "_main_":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("judge_server:app", host="0.0.0.0", port=port)
+
 
 app = FastAPI()
 
