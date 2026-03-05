@@ -6,7 +6,7 @@ import io
 import os
 import uvicorn
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("judge_server:app", host="0.0.0.0", port=port)
 
