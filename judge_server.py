@@ -26,132 +26,108 @@ def load_image(file_bytes):
 
 
 # =========================================================
-# PREPROCESSING
+# UNIFIED PREPROCESSING PIPELINE
 # =========================================================
 
-def preprocess_reference(img):
+def build_structural_maps(img):
 
     blur = cv2.GaussianBlur(img,(5,5),0)
-    edges = cv2.Canny(blur,80,160)
 
-    _,thresh = cv2.threshold(edges,40,255,cv2.THRESH_BINARY)
+    edges = cv2.Canny(blur,70,150)
 
-    kernel = np.ones((3,3),np.uint8)
-    silhouette = cv2.dilate(thresh,kernel,iterations=1)
+    _,binary = cv2.threshold(blur,40,255,cv2.THRESH_BINARY)
 
-    return silhouette
+    kernel = np.ones((5,5),np.uint8)
+    silhouette = cv2.morphologyEx(binary,cv2.MORPH_CLOSE,kernel)
 
+    gradient_x = cv2.Sobel(blur,cv2.CV_64F,1,0,ksize=3)
+    gradient_y = cv2.Sobel(blur,cv2.CV_64F,0,1,ksize=3)
 
-def preprocess_player(img):
+    magnitude = np.sqrt(gradient_x*2 + gradient_y*2)
 
-    blur = cv2.GaussianBlur(img,(3,3),0)
-    edges = cv2.Canny(blur,60,140)
-
-    return edges
+    return {
+        "edges":edges,
+        "silhouette":silhouette,
+        "gradient_mag":magnitude,
+        "blur":blur
+    }
 
 
 # =========================================================
-# SKELETONIZATION (gesture AI trick)
+# SKELETONIZATION
 # =========================================================
 
-def skeletonize(img):
-
-    _,binary = cv2.threshold(img,40,255,cv2.THRESH_BINARY)
+def skeletonize(binary):
 
     skeleton = np.zeros(binary.shape,np.uint8)
 
     element = cv2.getStructuringElement(cv2.MORPH_CROSS,(3,3))
 
+    img = binary.copy()
+
     done = False
 
     while not done:
-        eroded = cv2.erode(binary,element)
-        temp = cv2.dilate(eroded,element)
-        temp = cv2.subtract(binary,temp)
-        skeleton = cv2.bitwise_or(skeleton,temp)
-        binary = eroded.copy()
 
-        if cv2.countNonZero(binary) == 0:
+        eroded = cv2.erode(img,element)
+        temp = cv2.dilate(eroded,element)
+        temp = cv2.subtract(img,temp)
+
+        skeleton = cv2.bitwise_or(skeleton,temp)
+
+        img = eroded.copy()
+
+        if cv2.countNonZero(img) == 0:
             done = True
 
     return skeleton
 
 
 # =========================================================
-# FEATURE FUNCTIONS
+# METRICS
 # =========================================================
 
-def edge_density(img):
-    edges = cv2.Canny(img,100,200)
-    return float(np.mean(edges))
+def silhouette_similarity(ref,player):
+
+    ref_bin = ref["silhouette"] > 0
+    player_bin = player["silhouette"] > 0
+
+    intersection = np.logical_and(ref_bin,player_bin)
+    union = np.logical_or(ref_bin,player_bin)
+
+    score = intersection.sum()/(union.sum()+1e-6)
+
+    return float(score*100)
 
 
-def value_distribution(img):
-    hist = cv2.calcHist([img],[0],None,[256],[0,256])
-    return float(np.std(hist))
+def gesture_similarity(ref,player):
+
+    ref_skel = skeletonize(ref["silhouette"])
+    player_skel = skeletonize(player["silhouette"])
+
+    ref_gx = cv2.Sobel(ref_skel,cv2.CV_64F,1,0,ksize=3)
+    ref_gy = cv2.Sobel(ref_skel,cv2.CV_64F,0,1,ksize=3)
+
+    player_gx = cv2.Sobel(player_skel,cv2.CV_64F,1,0,ksize=3)
+    player_gy = cv2.Sobel(player_skel,cv2.CV_64F,0,1,ksize=3)
+
+    ref_angle = np.arctan2(ref_gy,ref_gx)
+    player_angle = np.arctan2(player_gy,player_gx)
+
+    diff = np.abs(ref_angle-player_angle)
+
+    score = 100 - np.mean(diff)*50
+
+    return float(max(0,min(100,score)))
 
 
-def composition_balance(img):
+def proportion_measure(struct):
 
-    moments = cv2.moments(img)
-
-    if moments["m00"] == 0:
-        return 0.0
-
-    cx = moments["m10"]/moments["m00"]
-    cy = moments["m01"]/moments["m00"]
-
-    return float(cx + cy)
-
-
-# =========================================================
-# DEPTH
-# =========================================================
-
-def depth_measure(img):
-
-    blur = cv2.GaussianBlur(img,(9,9),0)
-
-    _,binary = cv2.threshold(blur,40,255,cv2.THRESH_BINARY)
-
-    kernel = np.ones((5,5),np.uint8)
-    cleaned = cv2.morphologyEx(binary,cv2.MORPH_CLOSE,kernel)
-
-    contours = cv2.findContours(
-        cleaned,
+    contours,_ = cv2.findContours(
+        struct["silhouette"],
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
-    )[0]
-
-    if len(contours) == 0:
-        return 0.0
-
-    areas = [cv2.contourArea(c) for c in contours]
-
-    # layered shape variation
-    depth = np.std(areas)
-
-    return float(depth)
-
-
-# =========================================================
-# PROPORTION
-# =========================================================
-
-def proportion_measure(img):
-
-    blur = cv2.GaussianBlur(img,(13,13),0)
-
-    _,thresh = cv2.threshold(blur,40,255,cv2.THRESH_BINARY)
-
-    kernel = np.ones((5,5),np.uint8)
-    shape = cv2.dilate(thresh,kernel,iterations=2)
-
-    contours = cv2.findContours(
-        shape,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
-    )[0]
+    )
 
     if not contours:
         return 0.0
@@ -160,86 +136,63 @@ def proportion_measure(img):
 
     x,y,w,h = cv2.boundingRect(largest)
 
-    ratio = w/(h+1e-6)
-
-    return float(ratio*100)
+    return float(w/(h+1e-6))
 
 
-# =========================================================
-# GESTURE FLOW (skeleton comparison)
-# =========================================================
+def depth_measure(struct):
 
-def gesture_similarity(ref,img):
+    contours,_ = cv2.findContours(
+        struct["silhouette"],
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
 
-    ref_skel = skeletonize(ref)
-    img_skel = skeletonize(img)
+    if len(contours) <= 1:
+        return 0.0
 
-    ref_gx = cv2.Sobel(ref_skel,cv2.CV_64F,1,0,ksize=3)
-    ref_gy = cv2.Sobel(ref_skel,cv2.CV_64F,0,1,ksize=3)
+    areas = [cv2.contourArea(c) for c in contours]
 
-    img_gx = cv2.Sobel(img_skel,cv2.CV_64F,1,0,ksize=3)
-    img_gy = cv2.Sobel(img_skel,cv2.CV_64F,0,1,ksize=3)
-
-    ref_angle = np.arctan2(ref_gy,ref_gx)
-    img_angle = np.arctan2(img_gy,img_gx)
-
-    diff = np.abs(ref_angle-img_angle)
-
-    score = 100 - np.mean(diff)*50
-
-    score = max(0,min(100,score))
-
-    return float(score)
+    return float(np.std(areas))
 
 
-# =========================================================
-# SCRIBBLE PENALTY
-# =========================================================
+def line_quality(struct):
 
-def stroke_density_penalty(img):
-
-    edges = cv2.Canny(img,100,200)
+    edges = struct["edges"]
 
     density = np.sum(edges>0)/edges.size
 
-    if density > 0.18:
-        return 0.6
+    score = 1 - density
 
-    if density > 0.12:
-        return 0.8
-
-    return 1.0
+    return float(max(0,min(1,score))*100)
 
 
+def composition_balance(struct):
 
-def silhouette_similarity(ref,img):
+    m = cv2.moments(struct["silhouette"])
 
-    blur_ref = cv2.GaussianBlur(ref,(13,13),0)
-    blur_img = cv2.GaussianBlur(img,(13,13),0)
+    if m["m00"] == 0:
+        return 0
 
-    _,ref_bin = cv2.threshold(blur_ref,40,255,cv2.THRESH_BINARY)
-    _,img_bin = cv2.threshold(blur_img,40,255,cv2.THRESH_BINARY)
+    cx = m["m10"]/m["m00"]
+    cy = m["m01"]/m["m00"]
 
-    intersection = np.logical_and(ref_bin,img_bin)
-    union = np.logical_or(ref_bin,img_bin)
+    center_dist = np.sqrt((cx-128)*2 + (cy-128)*2)
 
-    score = intersection.sum() / (union.sum() + 1e-6)
+    score = 100 - center_dist/2
 
-    return float(score*100)
-    
+    return float(max(0,min(100,score)))
+
+
 # =========================================================
-# NORMALIZATION (no overshoot reward)
+# NORMALIZATION
 # =========================================================
 
-def normalize(player_feature,ref_feature):
+def normalize(player,ref):
 
-    player_feature=float(player_feature)
-    ref_feature=float(ref_feature)
+    if ref <= 1e-6:
+        return 0
 
-    if ref_feature<=1e-6:
-        return 0.0
-
-    ratio = player_feature/ref_feature
+    ratio = player/ref
 
     score = 100 - abs(1-ratio)*100
 
@@ -247,69 +200,37 @@ def normalize(player_feature,ref_feature):
 
 
 # =========================================================
-# METRIC BALANCING (hierarchy)
-# =========================================================
-
-def apply_metric_balance(metrics):
-
-    gesture = metrics["gesture"]
-    proportion = metrics["proportion"]
-
-    if gesture < 50:
-
-        metrics["line"] *= 0.7
-        metrics["depth"] *= 0.7
-        metrics["composition"] *= 0.7
-
-    if proportion < 50:
-
-        metrics["line"] *= 0.8
-        metrics["depth"] *= 0.8
-
-    return metrics
-
-
-# =========================================================
 # METRIC COMPUTATION
 # =========================================================
 
-def compute_metrics(reference,player):
+def compute_metrics(ref_struct,player_struct):
 
-    ref_line = edge_density(reference)
-    ref_value = value_distribution(reference)
-    ref_comp = composition_balance(reference)
-    ref_depth = depth_measure(reference)
-    ref_prop = proportion_measure(reference)
+    silhouette = silhouette_similarity(ref_struct,player_struct)
 
-    proportion = normalize(proportion_measure(player),ref_prop)
-    line = normalize(edge_density(player),ref_line)
-    value = normalize(value_distribution(player),ref_value)
-    composition = normalize(composition_balance(player),ref_comp)
-    depth = normalize(depth_measure(player),ref_depth)
-    silhouette = silhouette_similarity(reference,player)
+    gesture = gesture_similarity(ref_struct,player_struct)
 
-    gesture = gesture_similarity(reference,player)
+    proportion = normalize(
+        proportion_measure(player_struct),
+        proportion_measure(ref_struct)
+    )
 
-    penalty = stroke_density_penalty(player)
+    line = line_quality(player_struct)
 
-    line *= penalty
-    depth *= penalty
+    depth = normalize(
+        depth_measure(player_struct),
+        depth_measure(ref_struct)
+    )
 
-    metrics = {
+    composition = composition_balance(player_struct)
 
-        "proportion": proportion,
-        "line": line,
-        "value": value,
-        "gesture": gesture,
-        "composition": composition,
-        "depth": depth
-        "silhouette": silhouette,
-
+    return {
+        "silhouette":silhouette,
+        "gesture":gesture,
+        "proportion":proportion,
+        "line":line,
+        "depth":depth,
+        "composition":composition
     }
-
-    metrics = apply_metric_balance(metrics)
-
-    return metrics
 
 
 # =========================================================
@@ -318,7 +239,7 @@ def compute_metrics(reference,player):
 
 def calculate_score(metrics,weights):
 
-    score = 0.0
+    score = 0
 
     for key in weights:
         score += metrics[key]*weights[key]
@@ -337,52 +258,41 @@ async def judge(
     playerB: UploadFile = File(...)
 ):
 
-    ref_raw = load_image(await reference.read())
-    a_raw = load_image(await playerA.read())
-    b_raw = load_image(await playerB.read())
+    ref_img = load_image(await reference.read())
+    a_img = load_image(await playerA.read())
+    b_img = load_image(await playerB.read())
 
-    ref = preprocess_reference(ref_raw)
-    a = preprocess_player(a_raw)
-    b = preprocess_player(b_raw)
+    ref_struct = build_structural_maps(ref_img)
+    a_struct = build_structural_maps(a_img)
+    b_struct = build_structural_maps(b_img)
 
-    metricsA = compute_metrics(ref,a)
-    metricsB = compute_metrics(ref,b)
+    metricsA = compute_metrics(ref_struct,a_struct)
+    metricsB = compute_metrics(ref_struct,b_struct)
 
     weights = {
-
-        weights = {
-
-    "silhouette":0.25,
-    "gesture":0.25,
-    "proportion":0.15,
-    "line":0.15,
-    "depth":0.10,
-    "composition":0.10
-
-}
-
+        "silhouette":0.25,
+        "gesture":0.25,
+        "proportion":0.15,
+        "line":0.15,
+        "depth":0.10,
+        "composition":0.10
     }
 
     scoreA = calculate_score(metricsA,weights)
     scoreB = calculate_score(metricsB,weights)
 
-    winner="draw"
+    winner = "draw"
 
     if scoreA > scoreB:
-        winner="playerA"
-
+        winner = "playerA"
     elif scoreB > scoreA:
-        winner="playerB"
+        winner = "playerB"
 
     return {
-
         "winner":winner,
         "scoreA":round(scoreA,2),
         "scoreB":round(scoreB,2),
-
         "weights":weights,
-
         "metricsA":metricsA,
         "metricsB":metricsB
-
     }
