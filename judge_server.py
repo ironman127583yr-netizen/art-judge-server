@@ -43,7 +43,7 @@ def build_structural_maps(img):
     gradient_x = cv2.Sobel(blur,cv2.CV_64F,1,0,ksize=3)
     gradient_y = cv2.Sobel(blur,cv2.CV_64F,0,1,ksize=3)
 
-    magnitude = np.sqrt(gradient_x*2 + gradient_y*2)
+    magnitude = np.hypot(gradient_x, gradient_y)
 
     return {
         "edges":edges,
