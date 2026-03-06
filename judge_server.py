@@ -158,12 +158,21 @@ def depth_measure(struct):
 def line_quality(struct):
 
     edges = struct["edges"]
+    silhouette = struct["silhouette"]
 
-    density = np.sum(edges>0)/edges.size
+    skeleton = skeletonize(silhouette)
 
-    score = 1 - density
+    edge_pixels = np.sum(edges > 0)
+    skeleton_pixels = np.sum(skeleton > 0)
 
-    return float(max(0,min(1,score))*100)
+    if edge_pixels == 0:
+        return 0
+
+    efficiency = skeleton_pixels / (edge_pixels + 1e-6)
+
+    score = efficiency * 100
+
+    return float(max(0,min(100,score)))
 
 
 def composition_balance(struct):
@@ -190,13 +199,29 @@ def composition_balance(struct):
 def normalize(player,ref):
 
     if ref <= 1e-6:
-        return 0
+        return 0.0
 
     ratio = player/ref
 
     score = 100 - abs(1-ratio)*100
 
     return float(max(0,min(100,score)))
+
+
+def apply_structure_hierarchy(metrics):
+
+    silhouette = metrics["silhouette"]
+    gesture = metrics["gesture"]
+    proportion = metrics["proportion"]
+
+    structure_score = (silhouette + gesture + proportion) / 3
+
+    if structure_score < 60:
+        metrics["line"] *= 0.6
+        metrics["depth"] *= 0.6
+        metrics["composition"] *= 0.6
+
+    return metrics
 
 
 # =========================================================
@@ -208,6 +233,9 @@ def compute_metrics(ref_struct,player_struct):
     silhouette = silhouette_similarity(ref_struct,player_struct)
 
     gesture = gesture_similarity(ref_struct,player_struct)
+
+    # prevent scribble gesture cheating
+    gesture = min(gesture, silhouette + 10)
 
     proportion = normalize(
         proportion_measure(player_struct),
@@ -223,14 +251,18 @@ def compute_metrics(ref_struct,player_struct):
 
     composition = composition_balance(player_struct)
 
-    return {
-        "silhouette":silhouette,
-        "gesture":gesture,
-        "proportion":proportion,
-        "line":line,
-        "depth":depth,
-        "composition":composition
+    metrics = {
+        "silhouette": silhouette,
+        "gesture": gesture,
+        "proportion": proportion,
+        "line": line,
+        "depth": depth,
+        "composition": composition
     }
+
+    metrics = apply_structure_hierarchy(metrics)
+
+    return metrics
 
 
 # =========================================================
@@ -270,12 +302,12 @@ async def judge(
     metricsB = compute_metrics(ref_struct,b_struct)
 
     weights = {
-        "silhouette":0.25,
+        "silhouette":0.30,
         "gesture":0.25,
         "proportion":0.15,
         "line":0.15,
-        "depth":0.10,
-        "composition":0.10
+        "composition":0.10,
+        "depth":0.05
     }
 
     scoreA = calculate_score(metricsA,weights)
