@@ -110,14 +110,26 @@ def composition_balance(img):
 
 def depth_measure(img):
 
-    blur = cv2.GaussianBlur(img,(7,7),0)
+    blur = cv2.GaussianBlur(img,(9,9),0)
 
-    grad_x = cv2.Sobel(blur,cv2.CV_64F,1,0,ksize=5)
-    grad_y = cv2.Sobel(blur,cv2.CV_64F,0,1,ksize=5)
+    _,binary = cv2.threshold(blur,40,255,cv2.THRESH_BINARY)
 
-    magnitude = np.sqrt(grad_x*2 + grad_y*2)
+    kernel = np.ones((5,5),np.uint8)
+    cleaned = cv2.morphologyEx(binary,cv2.MORPH_CLOSE,kernel)
 
-    depth = np.mean(magnitude)
+    contours = cv2.findContours(
+        cleaned,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )[0]
+
+    if len(contours) == 0:
+        return 0.0
+
+    areas = [cv2.contourArea(c) for c in contours]
+
+    # layered shape variation
+    depth = np.std(areas)
 
     return float(depth)
 
@@ -199,6 +211,22 @@ def stroke_density_penalty(img):
     return 1.0
 
 
+
+def silhouette_similarity(ref,img):
+
+    blur_ref = cv2.GaussianBlur(ref,(13,13),0)
+    blur_img = cv2.GaussianBlur(img,(13,13),0)
+
+    _,ref_bin = cv2.threshold(blur_ref,40,255,cv2.THRESH_BINARY)
+    _,img_bin = cv2.threshold(blur_img,40,255,cv2.THRESH_BINARY)
+
+    intersection = np.logical_and(ref_bin,img_bin)
+    union = np.logical_or(ref_bin,img_bin)
+
+    score = intersection.sum() / (union.sum() + 1e-6)
+
+    return float(score*100)
+    
 # =========================================================
 # NORMALIZATION (no overshoot reward)
 # =========================================================
@@ -258,6 +286,7 @@ def compute_metrics(reference,player):
     value = normalize(value_distribution(player),ref_value)
     composition = normalize(composition_balance(player),ref_comp)
     depth = normalize(depth_measure(player),ref_depth)
+    silhouette = silhouette_similarity(reference,player)
 
     gesture = gesture_similarity(reference,player)
 
@@ -274,6 +303,7 @@ def compute_metrics(reference,player):
         "gesture": gesture,
         "composition": composition,
         "depth": depth
+        "silhouette": silhouette,
 
     }
 
@@ -320,12 +350,16 @@ async def judge(
 
     weights = {
 
-        "proportion":0.25,
-        "gesture":0.25,
-        "line":0.15,
-        "value":0.15,
-        "depth":0.10,
-        "composition":0.10
+        weights = {
+
+    "silhouette":0.25,
+    "gesture":0.25,
+    "proportion":0.15,
+    "line":0.15,
+    "depth":0.10,
+    "composition":0.10
+
+}
 
     }
 
