@@ -75,21 +75,42 @@ def composition_balance(img):
     cx = moments["m10"]/moments["m00"]
     cy = moments["m01"]/moments["m00"]
 
-    return float(cx+cy)
+    return float(cx + cy)
 
 
-def detail_strength(img):
+# =========================================================
+# DEPTH (replaces detail)
+# =========================================================
 
-    lap = cv2.Laplacian(img,cv2.CV_64F)
-    return float(lap.var())
+def depth_measure(img):
 
+    blur = cv2.GaussianBlur(img,(7,7),0)
+
+    grad_x = cv2.Sobel(blur,cv2.CV_64F,1,0,ksize=5)
+    grad_y = cv2.Sobel(blur,cv2.CV_64F,0,1,ksize=5)
+
+    magnitude = np.sqrt(grad_x*2 + grad_y*2)
+
+    depth = np.mean(magnitude)
+
+    return float(depth)
+
+
+# =========================================================
+# PROPORTION (blur silhouette mass)
+# =========================================================
 
 def proportion_measure(img):
 
-    edges = cv2.Canny(img,100,200)
+    blur = cv2.GaussianBlur(img,(13,13),0)
+
+    _,thresh = cv2.threshold(blur,40,255,cv2.THRESH_BINARY)
+
+    kernel = np.ones((5,5),np.uint8)
+    shape = cv2.dilate(thresh,kernel,iterations=2)
 
     contours = cv2.findContours(
-        edges,
+        shape,
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
     )[0]
@@ -143,10 +164,10 @@ def stroke_density_penalty(img):
 
     density = np.sum(edges>0)/edges.size
 
-    if density>0.18:
+    if density > 0.18:
         return 0.6
 
-    if density>0.12:
+    if density > 0.12:
         return 0.8
 
     return 1.0
@@ -158,14 +179,13 @@ def stroke_density_penalty(img):
 
 def normalize(player_feature,ref_feature):
 
-    player_feature=float(player_feature)
-    ref_feature=float(ref_feature)
+    player_feature = float(player_feature)
+    ref_feature = float(ref_feature)
 
-    if ref_feature<=1e-6:
+    if ref_feature <= 1e-6:
         return 0.0
 
     ratio = player_feature/ref_feature
-
     score = ratio*100
 
     return float(max(0,min(120,score)))
@@ -180,21 +200,25 @@ def compute_metrics(reference,player):
     ref_line = edge_density(reference)
     ref_value = value_distribution(reference)
     ref_comp = composition_balance(reference)
-    ref_detail = detail_strength(reference)
+    ref_depth = depth_measure(reference)
     ref_prop = proportion_measure(reference)
 
     proportion = normalize(proportion_measure(player),ref_prop)
     line = normalize(edge_density(player),ref_line)
     value = normalize(value_distribution(player),ref_value)
     composition = normalize(composition_balance(player),ref_comp)
-    detail = normalize(detail_strength(player),ref_detail)
+    depth = normalize(depth_measure(player),ref_depth)
 
     gesture = gesture_similarity(reference,player)
 
     penalty = stroke_density_penalty(player)
 
+    # scribble penalty
     line *= penalty
-    detail *= penalty
+    depth *= penalty
+
+    # proportion reliability penalty
+    proportion *= (0.7 + 0.3 * penalty)
 
     return {
 
@@ -203,7 +227,7 @@ def compute_metrics(reference,player):
         "value": value,
         "gesture": gesture,
         "composition": composition,
-        "detail": detail
+        "depth": depth
 
     }
 
@@ -247,11 +271,11 @@ async def judge(
     weights = {
 
         "proportion":0.25,
+        "gesture":0.25,
         "line":0.15,
-        "value":0.20,
-        "gesture":0.20,
-        "composition":0.10,
-        "detail":0.10
+        "value":0.15,
+        "depth":0.10,
+        "composition":0.10
 
     }
 
@@ -260,16 +284,15 @@ async def judge(
 
     winner="draw"
 
-    if scoreA>scoreB:
+    if scoreA > scoreB:
         winner="playerA"
 
-    elif scoreB>scoreA:
+    elif scoreB > scoreA:
         winner="playerB"
 
     return {
 
         "winner":winner,
-
         "scoreA":round(scoreA,2),
         "scoreB":round(scoreB,2),
 
