@@ -103,13 +103,16 @@ def proportion_measure(img):
 
 def normalize(player_feature, ref_feature):
 
+    player_feature = float(player_feature)
+    ref_feature = float(ref_feature)
+
     if ref_feature <= 1e-6:
-        return 0
+        return 0.0
 
     ratio = player_feature / ref_feature
     score = ratio * 100
 
-    return max(0,min(120,score))
+    return float(max(0, min(120, score)))
 
 
 # =========================================================
@@ -125,17 +128,12 @@ def compute_metrics(reference, player):
     ref_prop = proportion_measure(reference)
 
     metrics = {
-
-        "proportion": normalize(proportion_measure(player),ref_prop),
-
-        "line": normalize(edge_density(player),ref_line),
-
-        "value": normalize(value_distribution(player),ref_value),
-
-        "composition": normalize(composition_balance(player),ref_comp),
-
-        "detail": normalize(detail_strength(player),ref_detail)
-    }
+    "proportion": float(normalize(proportion_measure(player),ref_prop)),
+    "line": float(normalize(edge_density(player),ref_line)),
+    "value": float(normalize(value_distribution(player),ref_value)),
+    "composition": float(normalize(composition_balance(player),ref_comp)),
+    "detail": float(normalize(detail_strength(player),ref_detail))
+}
 
     return metrics
 
@@ -151,7 +149,7 @@ def calculate_score(metrics,weights):
     for key in metrics:
         score += metrics[key] * weights[key]
 
-    return score
+    return float(score)
 
 
 # =========================================================
