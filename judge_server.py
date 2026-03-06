@@ -80,22 +80,61 @@ def detail_strength(img):
     lap = cv2.Laplacian(img,cv2.CV_64F)
     return lap.var()
 
+def gesture_similarity(ref, img):
+
+    ref_edges = cv2.Canny(ref, 80, 160)
+    img_edges = cv2.Canny(img, 80, 160)
+
+    ref_grad_x = cv2.Sobel(ref_edges, cv2.CV_64F, 1, 0, ksize=3)
+    ref_grad_y = cv2.Sobel(ref_edges, cv2.CV_64F, 0, 1, ksize=3)
+
+    img_grad_x = cv2.Sobel(img_edges, cv2.CV_64F, 1, 0, ksize=3)
+    img_grad_y = cv2.Sobel(img_edges, cv2.CV_64F, 0, 1, ksize=3)
+
+    ref_angle = np.arctan2(ref_grad_y, ref_grad_x)
+    img_angle = np.arctan2(img_grad_y, img_grad_x)
+
+    diff = np.abs(ref_angle - img_angle)
+
+    score = 100 - np.mean(diff) * 50
+
+    return max(0, min(120, float(score)))
+
+def stroke_density_penalty(img):
+
+    edges = cv2.Canny(img, 100, 200)
+
+    density = np.sum(edges > 0) / edges.size
+
+    if density > 0.18:
+        return 0.6
+
+    if density > 0.12:
+        return 0.8
+
+    return 1.0
+
 
 def proportion_measure(img):
 
+    edges = cv2.Canny(img, 100, 200)
+
     contours,_ = cv2.findContours(
-        cv2.Canny(img,100,200),
+        edges,
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
     )
 
-    if len(contours) == 0:
+    if not contours:
         return 0
 
-    areas = [cv2.contourArea(c) for c in contours]
+    largest = max(contours, key=cv2.contourArea)
 
-    return np.mean(areas)
+    x,y,w,h = cv2.boundingRect(largest)
 
+    ratio = w / (h + 1e-6)
+
+    return float(ratio * 100)
 
 # =========================================================
 # NORMALIZATION
@@ -128,11 +167,16 @@ def compute_metrics(reference, player):
     ref_prop = proportion_measure(reference)
 
     metrics = {
-    "proportion": float(normalize(proportion_measure(player),ref_prop)),
-    "line": float(normalize(edge_density(player),ref_line)),
-    "value": float(normalize(value_distribution(player),ref_value)),
-    "composition": float(normalize(composition_balance(player),ref_comp)),
-    "detail": float(normalize(detail_strength(player),ref_detail))
+
+    "proportion": normalize(proportion_measure(player), ref_prop),
+
+    "line": normalize(edge_density(player), ref_line),
+
+    "gesture": normalize(gesture_similarity(ref, player), 100),
+
+    "composition": normalize(composition_balance(player), ref_comp),
+
+    "detail": normalize(detail_strength(player), ref_detail)
 }
 
     return metrics
