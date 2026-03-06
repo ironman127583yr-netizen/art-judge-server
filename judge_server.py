@@ -6,7 +6,6 @@ import io
 
 app = FastAPI()
 
-
 # =========================================================
 # ROOT
 # =========================================================
@@ -52,6 +51,33 @@ def preprocess_player(img):
 
 
 # =========================================================
+# SKELETONIZATION (gesture AI trick)
+# =========================================================
+
+def skeletonize(img):
+
+    _,binary = cv2.threshold(img,40,255,cv2.THRESH_BINARY)
+
+    skeleton = np.zeros(binary.shape,np.uint8)
+
+    element = cv2.getStructuringElement(cv2.MORPH_CROSS,(3,3))
+
+    done = False
+
+    while not done:
+        eroded = cv2.erode(binary,element)
+        temp = cv2.dilate(eroded,element)
+        temp = cv2.subtract(binary,temp)
+        skeleton = cv2.bitwise_or(skeleton,temp)
+        binary = eroded.copy()
+
+        if cv2.countNonZero(binary) == 0:
+            done = True
+
+    return skeleton
+
+
+# =========================================================
 # FEATURE FUNCTIONS
 # =========================================================
 
@@ -79,7 +105,7 @@ def composition_balance(img):
 
 
 # =========================================================
-# DEPTH (replaces detail)
+# DEPTH
 # =========================================================
 
 def depth_measure(img):
@@ -97,7 +123,7 @@ def depth_measure(img):
 
 
 # =========================================================
-# PROPORTION (blur silhouette mass)
+# PROPORTION
 # =========================================================
 
 def proportion_measure(img):
@@ -128,19 +154,19 @@ def proportion_measure(img):
 
 
 # =========================================================
-# GESTURE COMPARISON
+# GESTURE FLOW (skeleton comparison)
 # =========================================================
 
 def gesture_similarity(ref,img):
 
-    ref_edges = cv2.Canny(ref,80,160)
-    img_edges = cv2.Canny(img,80,160)
+    ref_skel = skeletonize(ref)
+    img_skel = skeletonize(img)
 
-    ref_gx = cv2.Sobel(ref_edges,cv2.CV_64F,1,0,ksize=3)
-    ref_gy = cv2.Sobel(ref_edges,cv2.CV_64F,0,1,ksize=3)
+    ref_gx = cv2.Sobel(ref_skel,cv2.CV_64F,1,0,ksize=3)
+    ref_gy = cv2.Sobel(ref_skel,cv2.CV_64F,0,1,ksize=3)
 
-    img_gx = cv2.Sobel(img_edges,cv2.CV_64F,1,0,ksize=3)
-    img_gy = cv2.Sobel(img_edges,cv2.CV_64F,0,1,ksize=3)
+    img_gx = cv2.Sobel(img_skel,cv2.CV_64F,1,0,ksize=3)
+    img_gy = cv2.Sobel(img_skel,cv2.CV_64F,0,1,ksize=3)
 
     ref_angle = np.arctan2(ref_gy,ref_gx)
     img_angle = np.arctan2(img_gy,img_gx)
@@ -149,7 +175,7 @@ def gesture_similarity(ref,img):
 
     score = 100 - np.mean(diff)*50
 
-    score = max(0,min(120,score))
+    score = max(0,min(100,score))
 
     return float(score)
 
@@ -174,21 +200,45 @@ def stroke_density_penalty(img):
 
 
 # =========================================================
-# NORMALIZATION
+# NORMALIZATION (no overshoot reward)
 # =========================================================
 
 def normalize(player_feature,ref_feature):
 
-    player_feature = float(player_feature)
-    ref_feature = float(ref_feature)
+    player_feature=float(player_feature)
+    ref_feature=float(ref_feature)
 
-    if ref_feature <= 1e-6:
+    if ref_feature<=1e-6:
         return 0.0
 
     ratio = player_feature/ref_feature
-    score = ratio*100
 
-    return float(max(0,min(120,score)))
+    score = 100 - abs(1-ratio)*100
+
+    return float(max(0,min(100,score)))
+
+
+# =========================================================
+# METRIC BALANCING (hierarchy)
+# =========================================================
+
+def apply_metric_balance(metrics):
+
+    gesture = metrics["gesture"]
+    proportion = metrics["proportion"]
+
+    if gesture < 50:
+
+        metrics["line"] *= 0.7
+        metrics["depth"] *= 0.7
+        metrics["composition"] *= 0.7
+
+    if proportion < 50:
+
+        metrics["line"] *= 0.8
+        metrics["depth"] *= 0.8
+
+    return metrics
 
 
 # =========================================================
@@ -213,14 +263,10 @@ def compute_metrics(reference,player):
 
     penalty = stroke_density_penalty(player)
 
-    # scribble penalty
     line *= penalty
     depth *= penalty
 
-    # proportion reliability penalty
-    proportion *= (0.7 + 0.3 * penalty)
-
-    return {
+    metrics = {
 
         "proportion": proportion,
         "line": line,
@@ -230,6 +276,10 @@ def compute_metrics(reference,player):
         "depth": depth
 
     }
+
+    metrics = apply_metric_balance(metrics)
+
+    return metrics
 
 
 # =========================================================
