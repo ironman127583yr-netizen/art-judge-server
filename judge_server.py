@@ -3,167 +3,212 @@ import numpy as np
 import cv2
 from PIL import Image
 import io
+import os
+import uvicorn
 
 app = FastAPI()
 
+
+# =========================================================
+# ROOT ENDPOINT
+# =========================================================
 
 @app.get("/")
 def home():
     return {"status": "Art Judge Server Running"}
 
 
-# -----------------------------
-# Image Loader
-# -----------------------------
+# =========================================================
+# IMAGE LOADING
+# =========================================================
+
 def load_image(file_bytes):
     image = Image.open(io.BytesIO(file_bytes)).convert("L")
-    image = image.resize((128, 128))
+    image = image.resize((256,256))
     return np.array(image)
 
 
-# -----------------------------
-# Metric 1 : Proportion
-# -----------------------------
-def proportion_score(ref, img):
-    diff = np.abs(ref.astype("float") - img.astype("float"))
-    score = 100 - (np.mean(diff) / 255) * 100
-    return np.clip(score, 0, 100)
+# =========================================================
+# PREPROCESSING
+# =========================================================
+
+def preprocess_reference(img):
+    blur = cv2.GaussianBlur(img,(5,5),0)
+    edges = cv2.Canny(blur,80,160)
+
+    _, thresh = cv2.threshold(edges,40,255,cv2.THRESH_BINARY)
+
+    kernel = np.ones((3,3),np.uint8)
+    silhouette = cv2.dilate(thresh,kernel,iterations=1)
+
+    return silhouette
 
 
-# -----------------------------
-# Metric 2 : Line Quality
-# -----------------------------
-def line_score(ref, img):
-    ref_edges = cv2.Canny(ref, 100, 200)
-    img_edges = cv2.Canny(img, 100, 200)
-
-    diff = np.abs(ref_edges.astype("float") - img_edges.astype("float"))
-    score = 100 - (np.mean(diff) / 255) * 100
-    return np.clip(score, 0, 100)
+def preprocess_player(img):
+    blur = cv2.GaussianBlur(img,(3,3),0)
+    edges = cv2.Canny(blur,60,140)
+    return edges
 
 
-# -----------------------------
-# Metric 3 : Value Balance
-# -----------------------------
-def value_score(ref, img):
-    ref_hist = cv2.calcHist([ref], [0], None, [256], [0, 256])
-    img_hist = cv2.calcHist([img], [0], None, [256], [0, 256])
+# =========================================================
+# FEATURE EXTRACTION
+# =========================================================
 
-    similarity = cv2.compareHist(ref_hist, img_hist, cv2.HISTCMP_CORREL)
-    score = (similarity + 1) * 50
-    return np.clip(score, 0, 100)
+def edge_density(img):
+    edges = cv2.Canny(img,100,200)
+    return np.mean(edges)
 
 
-# -----------------------------
-# Metric 4 : Composition
-# -----------------------------
-def composition_score(ref, img):
-    ref_moment = cv2.moments(ref)
-    img_moment = cv2.moments(img)
-
-    ref_cx = ref_moment["m10"] / (ref_moment["m00"] + 1e-5)
-    ref_cy = ref_moment["m01"] / (ref_moment["m00"] + 1e-5)
-
-    img_cx = img_moment["m10"] / (img_moment["m00"] + 1e-5)
-    img_cy = img_moment["m01"] / (img_moment["m00"] + 1e-5)
-
-    dist = np.sqrt((ref_cx - img_cx) * 2 + (ref_cy - img_cy) * 2)
-
-    score = 100 - (dist / 128) * 100
-    return np.clip(score, 0, 100)
+def value_distribution(img):
+    hist = cv2.calcHist([img],[0],None,[256],[0,256])
+    return np.std(hist)
 
 
-# -----------------------------
-# Metric 5 : Detail / Texture
-# -----------------------------
-def detail_score(ref, img):
-    ref_var = cv2.Laplacian(ref, cv2.CV_64F).var()
-    img_var = cv2.Laplacian(img, cv2.CV_64F).var()
+def composition_balance(img):
+    moments = cv2.moments(img)
 
-    diff = abs(ref_var - img_var)
-    score = 100 - (diff / max(ref_var, 1)) * 100
-    return np.clip(score, 0, 100)
+    if moments["m00"] == 0:
+        return 0
+
+    cx = moments["m10"]/moments["m00"]
+    cy = moments["m01"]/moments["m00"]
+
+    return cx + cy
 
 
-# -----------------------------
-# Analyze Reference Importance
-# -----------------------------
-def reference_weights(ref):
+def detail_strength(img):
+    lap = cv2.Laplacian(img,cv2.CV_64F)
+    return lap.var()
 
-    line_strength = np.mean(cv2.Canny(ref, 100, 200))
-    contrast = np.std(ref)
-    texture = cv2.Laplacian(ref, cv2.CV_64F).var()
 
-    proportion = 0.30
-    line = min(0.30, line_strength / 255)
-    value = min(0.25, contrast / 128)
-    detail = min(0.20, texture / 500)
-    composition = 1.0 - (proportion + line + value + detail)
+def proportion_measure(img):
 
-    weights = {
-        "proportion": proportion,
-        "line": line,
-        "value": value,
-        "composition": composition,
-        "detail": detail
+    contours,_ = cv2.findContours(
+        cv2.Canny(img,100,200),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    if len(contours) == 0:
+        return 0
+
+    areas = [cv2.contourArea(c) for c in contours]
+
+    return np.mean(areas)
+
+
+# =========================================================
+# NORMALIZATION
+# =========================================================
+
+def normalize(player_feature, ref_feature):
+
+    if ref_feature <= 1e-6:
+        return 0
+
+    ratio = player_feature / ref_feature
+    score = ratio * 100
+
+    return max(0,min(120,score))
+
+
+# =========================================================
+# METRIC COMPUTATION
+# =========================================================
+
+def compute_metrics(reference, player):
+
+    ref_line = edge_density(reference)
+    ref_value = value_distribution(reference)
+    ref_comp = composition_balance(reference)
+    ref_detail = detail_strength(reference)
+    ref_prop = proportion_measure(reference)
+
+    metrics = {
+
+        "proportion": normalize(proportion_measure(player),ref_prop),
+
+        "line": normalize(edge_density(player),ref_line),
+
+        "value": normalize(value_distribution(player),ref_value),
+
+        "composition": normalize(composition_balance(player),ref_comp),
+
+        "detail": normalize(detail_strength(player),ref_detail)
     }
 
-    total = sum(weights.values())
-
-    for k in weights:
-        weights[k] /= total
-
-    return weights
+    return metrics
 
 
-# -----------------------------
-# Score Player
-# -----------------------------
-def score_player(ref, img, weights):
+# =========================================================
+# FINAL SCORE
+# =========================================================
 
-    scores = {
-        "proportion": proportion_score(ref, img),
-        "line": line_score(ref, img),
-        "value": value_score(ref, img),
-        "composition": composition_score(ref, img),
-        "detail": detail_score(ref, img)
-    }
+def calculate_score(metrics,weights):
 
-    final = sum(scores[m] * weights[m] for m in scores)
+    score = 0
 
-    return final, scores
+    for key in metrics:
+        score += metrics[key] * weights[key]
+
+    return score
 
 
-# -----------------------------
-# Judge Endpoint
-# -----------------------------
+# =========================================================
+# JUDGE ENDPOINT
+# =========================================================
+
 @app.post("/judge")
 async def judge(
-        reference: UploadFile = File(...),
-        playerA: UploadFile = File(...),
-        playerB: UploadFile = File(...)
+    reference: UploadFile = File(...),
+    playerA: UploadFile = File(...),
+    playerB: UploadFile = File(...)
 ):
 
-    ref_img = load_image(await reference.read())
-    a_img = load_image(await playerA.read())
-    b_img = load_image(await playerB.read())
+    # load images
+    ref_raw = load_image(await reference.read())
+    a_raw = load_image(await playerA.read())
+    b_raw = load_image(await playerB.read())
 
-    weights = reference_weights(ref_img)
+    # preprocess images
+    ref = preprocess_reference(ref_raw)
+    a = preprocess_player(a_raw)
+    b = preprocess_player(b_raw)
 
-    scoreA, metricsA = score_player(ref_img, a_img, weights)
-    scoreB, metricsB = score_player(ref_img, b_img, weights)
+    # compute metrics
+    metricsA = compute_metrics(ref,a)
+    metricsB = compute_metrics(ref,b)
+
+    # scoring weights
+    weights = {
+        "proportion":0.30,
+        "line":0.15,
+        "value":0.25,
+        "composition":0.10,
+        "detail":0.20
+    }
+
+    scoreA = calculate_score(metricsA,weights)
+    scoreB = calculate_score(metricsB,weights)
 
     winner = "draw"
+
     if scoreA > scoreB:
         winner = "playerA"
+
     elif scoreB > scoreA:
         winner = "playerB"
 
+
     return {
+
         "winner": winner,
-        "scoreA": round(scoreA, 2),
-        "scoreB": round(scoreB, 2),
+
+        "scoreA": round(scoreA,2),
+        "scoreB": round(scoreB,2),
+
         "weights": weights,
+
         "metricsA": metricsA,
         "metricsB": metricsB
     }
