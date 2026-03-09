@@ -3,16 +3,13 @@ import numpy as np
 import cv2
 from PIL import Image
 import io
+import requests
 
 app = FastAPI()
 
 # =========================================================
 # ROOT
-# =========================================================
-
-@app.get("/")
-def home():
-    return {"status": "Art Judge Server Running"}
+# =======================================================
 
 
 # =========================================================
@@ -21,6 +18,12 @@ def home():
 
 def load_image(file_bytes):
     img = Image.open(io.BytesIO(file_bytes)).convert("L")
+    img = img.resize((256,256))
+    return np.array(img)
+
+def load_image_from_url(url):
+    response = requests.get(url)
+    img = Image.open(io.BytesIO(response.content)).convert("L")
     img = img.resize((256,256))
     return np.array(img)
 
@@ -283,16 +286,20 @@ def calculate_score(metrics,weights):
 # JUDGE ENDPOINT
 # =========================================================
 
-@app.post("/judge")
-async def judge(
-    reference: UploadFile = File(...),
-    playerA: UploadFile = File(...),
-    playerB: UploadFile = File(...)
-):
+from pydantic import BaseModel
 
-    ref_img = load_image(await reference.read())
-    a_img = load_image(await playerA.read())
-    b_img = load_image(await playerB.read())
+class JudgeRequest(BaseModel):
+    referenceIndex: str
+    artAUrl: str
+    artBUrl: str
+
+
+@app.post("/judge")
+async def judge(req: JudgeRequest):
+
+    ref_img = load_image_from_url(req.referenceUrl)
+a_img = load_image_from_url(req.artAUrl)
+b_img = load_image_from_url(req.artBUrl)
 
     ref_struct = build_structural_maps(ref_img)
     a_struct = build_structural_maps(a_img)
@@ -324,7 +331,8 @@ async def judge(
         "winner":winner,
         "scoreA":round(scoreA,2),
         "scoreB":round(scoreB,2),
-        "weights":weights,
-        "metricsA":metricsA,
-        "metricsB":metricsB
+        "metrics":{
+            "A":metricsA,
+            "B":metricsB
+        }
     }
