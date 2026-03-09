@@ -22,9 +22,13 @@ def load_image(file_bytes):
     return np.array(img)
 
 def load_image_from_url(url):
+
     response = requests.get(url)
+    response.raise_for_status()
+
     img = Image.open(io.BytesIO(response.content)).convert("L")
     img = img.resize((256,256))
+
     return np.array(img)
 
 
@@ -289,7 +293,7 @@ def calculate_score(metrics,weights):
 from pydantic import BaseModel
 
 class JudgeRequest(BaseModel):
-    referenceIndex: str
+    referenceUrl: str
     artAUrl: str
     artBUrl: str
 
@@ -298,8 +302,8 @@ class JudgeRequest(BaseModel):
 async def judge(req: JudgeRequest):
 
     ref_img = load_image_from_url(req.referenceUrl)
-a_img = load_image_from_url(req.artAUrl)
-b_img = load_image_from_url(req.artBUrl)
+    a_img = load_image_from_url(req.artAUrl)
+    b_img = load_image_from_url(req.artBUrl)
 
     ref_struct = build_structural_maps(ref_img)
     a_struct = build_structural_maps(a_img)
