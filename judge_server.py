@@ -1,11 +1,87 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI
 import numpy as np
 import cv2
 from PIL import Image
 import io
 import requests
+import asyncio
+from pydantic import BaseModel
+
+# =========================================================
+# PLAYFAB CONFIG
+# =========================================================
+
+PLAYFAB_TITLE_ID = "YOUR_TITLE_ID"
+PLAYFAB_SECRET_KEY = "YOUR_SECRET_KEY"
+
+PLAYFAB_ADMIN_URL = f"https://{PLAYFAB_TITLE_ID}.playfabapi.com/Admin"
+
+# =========================================================
+# PLAYFAB HELPERS
+# =========================================================
+
+def get_object(object_name):
+
+    res = requests.post(
+        PLAYFAB_ADMIN_URL + "/GetObjects",
+        headers={"X-SecretKey": PLAYFAB_SECRET_KEY},
+        json={
+            "Entity": {
+                "Id": PLAYFAB_TITLE_ID,
+                "Type": "title"
+            },
+            "ObjectNames": [object_name]
+        }
+    )
+
+    data = res.json()
+
+    if "Objects" not in data["data"]:
+        return None
+
+    if object_name not in data["data"]["Objects"]:
+        return None
+
+    return data["data"]["Objects"][object_name]["DataObject"]
+
+
+def set_object(object_name, obj):
+
+    requests.post(
+        PLAYFAB_ADMIN_URL + "/SetObjects",
+        headers={"X-SecretKey": PLAYFAB_SECRET_KEY},
+        json={
+            "Entity": {
+                "Id": PLAYFAB_TITLE_ID,
+                "Type": "title"
+            },
+            "Objects": [{
+                "ObjectName": object_name,
+                "DataObject": obj
+            }]
+        }
+    )
+
+
+def delete_object(object_name):
+
+    requests.post(
+        PLAYFAB_ADMIN_URL + "/DeleteObjects",
+        headers={"X-SecretKey": PLAYFAB_SECRET_KEY},
+        json={
+            "Entity": {
+                "Id": PLAYFAB_TITLE_ID,
+                "Type": "title"
+            },
+            "ObjectNames": [object_name]
+        }
+    )
 
 app = FastAPI()
+
+@app.on_event("startup")
+async def start_worker():
+    asyncio.create_task(judge_worker())
 
 # =========================================================
 # ROOT
@@ -285,6 +361,107 @@ def calculate_score(metrics,weights):
 
     return float(score)
 
+# =========================================================
+# INTERNAL JUDGE FUNCTION
+# =========================================================
+
+def judge_internal(reference_url, artA_url, artB_url):
+
+    ref_img = load_image_from_url(reference_url)
+    a_img = load_image_from_url(artA_url)
+    b_img = load_image_from_url(artB_url)
+
+    ref_struct = build_structural_maps(ref_img)
+    a_struct = build_structural_maps(a_img)
+    b_struct = build_structural_maps(b_img)
+
+    metricsA = compute_metrics(ref_struct, a_struct)
+    metricsB = compute_metrics(ref_struct, b_struct)
+
+    weights = {
+        "silhouette":0.30,
+        "gesture":0.25,
+        "proportion":0.15,
+        "line":0.15,
+        "composition":0.10,
+        "depth":0.05
+    }
+
+    scoreA = calculate_score(metricsA, weights)
+    scoreB = calculate_score(metricsB, weights)
+
+    winner = "draw"
+
+    if scoreA > scoreB:
+        winner = "playerA"
+    elif scoreB > scoreA:
+        winner = "playerB"
+
+    return {
+        "winner": winner,
+        "scoreA": round(scoreA,2),
+        "scoreB": round(scoreB,2),
+        "metrics":{
+            "A":metricsA,
+            "B":metricsB
+        }
+    }
+
+# =========================================================
+# BACKGROUND JUDGE WORKER
+# =========================================================
+
+async def judge_worker():
+
+    print("Judge worker started")
+
+    while True:
+
+        try:
+
+            jobs = get_object("judge_queue")
+
+if not jobs:
+    await asyncio.sleep(2)
+    continue
+
+if not isinstance(jobs, list):
+    jobs = [jobs]
+
+            if jobs is None:
+                await asyncio.sleep(2)
+                continue
+
+            for job in jobs:
+
+                match_id = job["matchId"]
+
+                print("Processing match", match_id)
+
+                result = judge_internal(
+                    job["referenceUrl"],
+                    job["artAUrl"],
+                    job["artBUrl"]
+                )
+
+                match = get_object("match_" + match_id)
+
+                if match is None:
+                    continue
+
+                match["result"] = result
+                match["state"] = "FINISHED"
+
+                set_object("match_" + match_id, match)
+
+            delete_object("judge_queue")
+
+        except Exception as e:
+
+            print("Worker error:", e)
+
+        await asyncio.sleep(2)
+
 
 # =========================================================
 # JUDGE ENDPOINT
@@ -300,6 +477,12 @@ class JudgeRequest(BaseModel):
 
 @app.post("/judge")
 async def judge(req: JudgeRequest):
+
+    return judge_internal(
+        req.referenceUrl,
+        req.artAUrl,
+        req.artBUrl
+    )
 
     ref_img = load_image_from_url(req.referenceUrl)
     a_img = load_image_from_url(req.artAUrl)
