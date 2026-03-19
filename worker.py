@@ -16,7 +16,7 @@ async def judge_worker():
             if not match:
                 continue
 
-            print("Processing match:", match_id)
+            print("Processing:", match_id)
 
             result = judge_internal(
                 match["referenceUrl"],
