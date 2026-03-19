@@ -5,46 +5,27 @@ from judge import judge_internal
 QUEUE = asyncio.Queue()
 
 async def judge_worker():
-
     print("Judge worker started")
 
     while True:
+        match_id = await QUEUE.get()
 
         try:
-            jobs = get_object("judge_queue")
+            match = MATCHES.get(match_id)
 
-            if not jobs:
-                await asyncio.sleep(2)
+            if not match:
                 continue
 
-            if not isinstance(jobs, list):
-                jobs = [jobs]
+            print("Processing match:", match_id)
 
-            for job in jobs:
+            result = judge_internal(
+                match["referenceUrl"],
+                match["artA"],
+                match["artB"]
+            )
 
-                match_id = job["matchId"]
-
-                print("Processing match", match_id)
-
-                result = judge_internal(
-                    job["referenceUrl"],
-                    job["artAUrl"],
-                    job["artBUrl"]
-                )
-
-                match = get_object("match_" + match_id)
-
-                if match is None:
-                    continue
-
-                match["result"] = result
-                match["state"] = "FINISHED"
-
-                set_object("match_" + match_id, match)
-
-            delete_object("judge_queue")
+            match["result"] = result
+            match["state"] = "FINISHED"
 
         except Exception as e:
             print("Worker error:", e)
-
-        await asyncio.sleep(2)
