@@ -23,13 +23,16 @@ REFERENCE_POOL = [
 @router.post("/initializeMatch")
 async def initialize_match(data: dict):
 
-    match_id = data["matchId"]
-    player_id = data["playerId"]
+    match_id = data.get("matchId")
+    player_id = data.get("playerId")
     duration = data.get("duration", 30)
+
+    if not match_id or not player_id:
+        return {"error": "missing fields"}
 
     match = MATCHES.get(match_id)
 
-    if not match:
+    if match is None:
         ref_index = random.randint(0, len(REFERENCE_POOL) - 1)
 
         match = {
@@ -46,11 +49,12 @@ async def initialize_match(data: dict):
             "result": None
         }
 
-    elif not match["playerB"] and match["playerA"] != player_id:
-        match["playerB"] = player_id
+    else:
+        if match.get("playerB") is None and match.get("playerA") != player_id:
+            match["playerB"] = player_id
 
     # activate match
-    if match["playerA"] and match["playerB"] and match["state"] == "CREATED":
+    if match.get("playerA") and match.get("playerB") and match.get("state") == "CREATED":
         match["state"] = "ACTIVE"
         match["startTimestamp"] = int(time.time() * 1000)
 
