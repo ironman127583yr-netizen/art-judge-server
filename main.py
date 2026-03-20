@@ -7,6 +7,12 @@ import random
 from worker import judge_worker, QUEUE, MATCHES
 
 app = FastAPI()
+@app.get("/debug")
+def debug():
+    return {
+        "status": "THIS IS NEW CODE",
+        "version": "v2-clean"
+    }
 
 # =========================
 # STARTUP
