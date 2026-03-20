@@ -2,11 +2,43 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import time
 import asyncio
+import os
+import psycopg2
 
 from db import get_conn
 from worker import QUEUE, judge_worker
 
 app = FastAPI()
+
+@app.get("/create-table")
+def create_table():
+    try:
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+        cur = conn.cursor()
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS matches (
+            match_id TEXT PRIMARY KEY,
+            player_a TEXT,
+            player_b TEXT,
+            art_a TEXT,
+            art_b TEXT,
+            state TEXT,
+            reference_index INT,
+            start_timestamp BIGINT,
+            duration INT,
+            result TEXT
+        );
+        """)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {"status": "table created or already exists"}
+
+    except Exception as e:
+        return {"error": str(e)}
 
 # ===============================
 # MODELS
