@@ -1,32 +1,12 @@
-from fastapi import FastAPI
 import numpy as np
 import cv2
 from PIL import Image
 import io
 import requests
-import asyncio
-from pydantic import BaseModel
 
-app = FastAPI()
-
-# =========================================================
-# IN-MEMORY STORE (TEMP — replace with DB later)
-# =========================================================
-
-MATCHES = {}
-QUEUE = asyncio.Queue()
-
-# =========================================================
-# STARTUP
-# =========================================================
-
-@app.on_event("startup")
-async def start_worker():
-    asyncio.create_task(judge_worker())
-
-# =========================================================
-# IMAGE LOADING
-# =========================================================
+# =========================
+# IMAGE LOAD
+# =========================
 
 def load_image_from_url(url):
     response = requests.get(url)
@@ -35,9 +15,9 @@ def load_image_from_url(url):
     img = img.resize((256, 256))
     return np.array(img)
 
-# =========================================================
+# =========================
 # PROCESSING
-# =========================================================
+# =========================
 
 def build_structural_maps(img):
     blur = cv2.GaussianBlur(img, (5, 5), 0)
@@ -61,9 +41,9 @@ def silhouette_similarity(ref, player):
 
     return float((intersection.sum() / (union.sum() + 1e-6)) * 100)
 
-# =========================================================
-# JUDGE CORE
-# =========================================================
+# =========================
+# MAIN JUDGE
+# =========================
 
 def judge_internal(reference_url, artA_url, artB_url):
     ref = build_structural_maps(load_image_from_url(reference_url))
@@ -85,110 +65,3 @@ def judge_internal(reference_url, artA_url, artB_url):
         "scoreA": round(scoreA, 2),
         "scoreB": round(scoreB, 2)
     }
-
-# =========================================================
-# WORKER (FIXED — NO SYNTAX ERROR)
-# =========================================================
-
-async def judge_worker():
-    print("Judge worker started")
-
-    while True:
-        match_id = await QUEUE.get()
-
-        match = MATCHES.get(match_id)
-        if not match:
-            continue
-
-        try:
-            result = judge_internal(
-                match["referenceUrl"],
-                match["artA"],
-                match["artB"]
-            )
-
-            match["result"] = result
-            match["state"] = "FINISHED"
-
-            print(f"Match {match_id} finished")
-
-        except Exception as e:
-            print("Judge error:", e)
-
-# =========================================================
-# API
-# =========================================================
-
-@app.post("/initializeMatch")
-async def initialize_match(data: dict):
-    match_id = data["matchId"]
-    player_id = data["playerId"]
-
-    match = MATCHES.get(match_id)
-
-    if not match:
-        match = {
-            "matchId": match_id,
-            "playerA": player_id,
-            "playerB": None,
-            "artA": None,
-            "artB": None,
-            "state": "CREATED",
-            "referenceUrl": data["referenceUrl"]
-        }
-
-    elif not match["playerB"]:
-        match["playerB"] = player_id
-
-    if match["playerA"] and match["playerB"]:
-        match["state"] = "ACTIVE"
-
-    MATCHES[match_id] = match
-
-    return {
-        "state": match["state"]
-    }
-
-@app.post("/submitArt")
-async def submit_art(data: dict):
-    match = MATCHES.get(data["matchId"])
-
-    if not match:
-        return {"error": "match not found"}
-
-    if data["playerId"] == match["playerA"]:
-        match["artA"] = data["artUrl"]
-    else:
-        match["artB"] = data["artUrl"]
-
-    if match["artA"] and match["artB"]:
-        match["state"] = "JUDGING"
-        await QUEUE.put(match["matchId"])
-
-    return {"status": "ok"}
-
-@app.get("/getMatchState")
-async def get_match(matchId: str):
-    match = MATCHES.get(matchId)
-
-    if not match:
-        return {"state": "UNKNOWN"}
-
-    return match
-
-# =========================================================
-# TEST ENDPOINT
-# =========================================================
-
-class JudgeRequest(BaseModel):
-    referenceUrl: str
-    artAUrl: str
-    artBUrl: str
-
-@app.post("/judge")
-async def judge(req: JudgeRequest):
-    return judge_internal(
-        req.referenceUrl,
-        req.artAUrl,
-        req.artBUrl
-    )
