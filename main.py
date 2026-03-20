@@ -64,10 +64,7 @@ async def initialize_match(data: InitRequest):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT * FROM matches WHERE match_id=%s", (data.matchId,))
-    row = cur.fetchone()
-
-    if not row:
+    try:
         ref_index = abs(hash(data.matchId)) % 4
 
         cur.execute("""
@@ -90,33 +87,40 @@ async def initialize_match(data: InitRequest):
             "duration": data.duration
         }
 
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+
+    # fetch existing
+    cur.execute("SELECT * FROM matches WHERE match_id=%s", (data.matchId,))
+    row = cur.fetchone()
+
     player_a, player_b, state = row[1], row[2], row[5]
 
+    # join second player
     if not player_b and player_a != data.playerId:
         cur.execute("""
         UPDATE matches SET player_b=%s WHERE match_id=%s
         """, (data.playerId, data.matchId))
-        player_b = data.playerId
-
-    if player_a and player_b and state == "CREATED":
-        start = int(time.time() * 1000)
-
-        cur.execute("""
-        UPDATE matches
-        SET state='ACTIVE', start_timestamp=%s
-        WHERE match_id=%s
-        """, (start, data.matchId))
-
         conn.commit()
 
+    # start match (SAFE)
+    cur.execute("""
+    UPDATE matches
+    SET state='ACTIVE', start_timestamp=%s
+    WHERE match_id=%s AND state='CREATED'
+    RETURNING start_timestamp
+    """, (int(time.time()*1000), data.matchId))
+
+    started = cur.fetchone()
+
+    if started:
         return {
             "referenceIndex": row[6],
-            "startTimestamp": start,
+            "startTimestamp": started[0],
             "duration": row[8]
         }
 
-    conn.commit()
-
+    # fallback
     return {
         "referenceIndex": row[6],
         "startTimestamp": row[7] or 0,
