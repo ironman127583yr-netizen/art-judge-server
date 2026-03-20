@@ -137,6 +137,9 @@ async def submit_art(data: SubmitRequest):
     conn = get_conn()
     cur = conn.cursor()
 
+    # ===============================
+    # GET MATCH
+    # ===============================
     cur.execute("SELECT * FROM matches WHERE match_id=%s", (data.matchId,))
     match = cur.fetchone()
 
@@ -144,61 +147,83 @@ async def submit_art(data: SubmitRequest):
         return {"error": "match not found"}
 
     player_a, player_b = match[1], match[2]
+    art_a, art_b = match[3], match[4]
     state = match[5]
     start = match[7]
     duration = match[8]
 
+    # ===============================
+    # VALIDATIONS
+    # ===============================
+
     if state != "ACTIVE":
         return {"error": "not active"}
+
+    if not start:
+        return {"error": "not started"}
 
     if int(time.time()*1000) > start + duration*1000:
         return {"error": "time over"}
 
+    # ===============================
+    # PLAYER CHECK
+    # ===============================
+
     if data.playerId not in [player_a, player_b]:
         return {"error": "invalid player"}
 
+    # ===============================
+    # DUPLICATE PROTECTION
+    # ===============================
+
+    if data.playerId == player_a and art_a:
+        return {"error": "already submitted"}
+
+    if data.playerId == player_b and art_b:
+        return {"error": "already submitted"}
+
+    # ===============================
+    # SAVE ART
+    # ===============================
+
     if data.playerId == player_a:
-        cur.execute("UPDATE matches SET art_a=%s WHERE match_id=%s",
-                    (data.artUrl, data.matchId))
+        cur.execute(
+            "UPDATE matches SET art_a=%s WHERE match_id=%s",
+            (data.artUrl, data.matchId)
+        )
     else:
-        cur.execute("UPDATE matches SET art_b=%s WHERE match_id=%s",
-                    (data.artUrl, data.matchId))
-
-    # check both submitted
-    cur.execute("SELECT art_a, art_b FROM matches WHERE match_id=%s", (data.matchId,))
-    artA, artB = cur.fetchone()
-
-    if artA and artB:
-        cur.execute("UPDATE matches SET state='JUDGING' WHERE match_id=%s",
-                    (data.matchId,))
-        await QUEUE.put(data.matchId)
+        cur.execute(
+            "UPDATE matches SET art_b=%s WHERE match_id=%s",
+            (data.artUrl, data.matchId)
+        )
 
     conn.commit()
 
+    # ===============================
+    # CHECK BOTH SUBMITTED
+    # ===============================
+
+    cur.execute(
+        "SELECT art_a, art_b, state FROM matches WHERE match_id=%s",
+        (data.matchId,)
+    )
+    artA, artB, current_state = cur.fetchone()
+
+    if artA and artB and current_state == "ACTIVE":
+
+        # move to judging ONLY ONCE
+        cur.execute("""
+        UPDATE matches
+        SET state='JUDGING'
+        WHERE match_id=%s AND state='ACTIVE'
+        """, (data.matchId,))
+
+        conn.commit()
+
+        # push to worker queue
+        await QUEUE.put(data.matchId)
+
     return {"status": "ok"}
-
-# ===============================
-# GET STATE
-# ===============================
-
-@app.get("/getMatchState")
-async def get_match(matchId: str):
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM matches WHERE match_id=%s", (matchId,))
-    match = cur.fetchone()
-
-    if not match:
-        return {"state": "UNKNOWN"}
-
-    return {
-        "state": match[5],
-        "startTimestamp": match[7] or 0,
-        "duration": match[8],
-        "result": match[9]
-    }
 
 # ===============================
 # START WORKER
