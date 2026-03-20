@@ -1,7 +1,7 @@
 import asyncio
-from store import MATCHES
 from judge import judge_internal
 
+MATCHES = {}
 QUEUE = asyncio.Queue()
 
 async def judge_worker():
@@ -10,14 +10,11 @@ async def judge_worker():
     while True:
         match_id = await QUEUE.get()
 
+        match = MATCHES.get(match_id)
+        if not match:
+            continue
+
         try:
-            match = MATCHES.get(match_id)
-
-            if not match:
-                continue
-
-            print("Processing:", match_id)
-
             result = judge_internal(
                 match["referenceUrl"],
                 match["artA"],
@@ -27,5 +24,7 @@ async def judge_worker():
             match["result"] = result
             match["state"] = "FINISHED"
 
+            print(f"Match {match_id} finished")
+
         except Exception as e:
-            print("Worker error:", e)
+            print("Judge error:", e)
