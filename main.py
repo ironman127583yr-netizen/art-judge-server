@@ -140,6 +140,25 @@ async def submit_art(data: SubmitRequest):
     # ===============================
     # GET MATCH
     # ===============================
+    @app.get("/getMatchState")
+def get_match_state(matchId: str):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM matches WHERE match_id=%s", (matchId,))
+    row = cur.fetchone()
+
+    if not row:
+        return {"error": "match not found"}
+
+    return {
+        "state": row[5],
+        "referenceIndex": row[6],
+        "startTimestamp": row[7] or 0,
+        "duration": row[8],
+        "result": row[9]
+    }
+    
     cur.execute("SELECT * FROM matches WHERE match_id=%s", (data.matchId,))
     match = cur.fetchone()
 
