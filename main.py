@@ -10,6 +10,25 @@ from worker import QUEUE, judge_worker
 
 app = FastAPI()
 
+# ===============================
+# MODELS
+# ===============================
+
+class InitRequest(BaseModel):
+    matchId: str
+    playerId: str
+    duration: int = 30
+
+class SubmitRequest(BaseModel):
+    matchId: str
+    playerId: str
+    artUrl: str
+
+
+# ===============================
+# CREATE TABLE
+# ===============================
+
 @app.get("/create-table")
 def create_table():
     try:
@@ -35,24 +54,11 @@ def create_table():
         cur.close()
         conn.close()
 
-        return {"status": "table created or already exists"}
+        return {"status": "ok"}
 
     except Exception as e:
         return {"error": str(e)}
 
-# ===============================
-# MODELS
-# ===============================
-
-class InitRequest(BaseModel):
-    matchId: str
-    playerId: str
-    duration: int = 30
-
-class SubmitRequest(BaseModel):
-    matchId: str
-    playerId: str
-    artUrl: str
 
 # ===============================
 # INIT MATCH
@@ -94,16 +100,20 @@ async def initialize_match(data: InitRequest):
     cur.execute("SELECT * FROM matches WHERE match_id=%s", (data.matchId,))
     row = cur.fetchone()
 
+    if not row:
+        return {"error": "match not found"}
+
     player_a, player_b, state = row[1], row[2], row[5]
 
     # join second player
     if not player_b and player_a != data.playerId:
-        cur.execute("""
-        UPDATE matches SET player_b=%s WHERE match_id=%s
-        """, (data.playerId, data.matchId))
+        cur.execute(
+            "UPDATE matches SET player_b=%s WHERE match_id=%s",
+            (data.playerId, data.matchId)
+        )
         conn.commit()
 
-    # start match (SAFE)
+    # start match
     cur.execute("""
     UPDATE matches
     SET state='ACTIVE', start_timestamp=%s
@@ -120,28 +130,20 @@ async def initialize_match(data: InitRequest):
             "duration": row[8]
         }
 
-    # fallback
     return {
         "referenceIndex": row[6],
         "startTimestamp": row[7] or 0,
         "duration": row[8]
     }
 
+
 # ===============================
-# SUBMIT ART
+# GET MATCH STATE
 # ===============================
 
-@app.post("/submitArt")
-async def submit_art(data: SubmitRequest):
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    # ===============================
-    # GET MATCH
-    # ===============================
-    @app.get("/getMatchState")
+@app.get("/getMatchState")
 def get_match_state(matchId: str):
+
     conn = get_conn()
     cur = conn.cursor()
 
@@ -158,7 +160,18 @@ def get_match_state(matchId: str):
         "duration": row[8],
         "result": row[9]
     }
-    
+
+
+# ===============================
+# SUBMIT ART
+# ===============================
+
+@app.post("/submitArt")
+async def submit_art(data: SubmitRequest):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
     cur.execute("SELECT * FROM matches WHERE match_id=%s", (data.matchId,))
     match = cur.fetchone()
 
@@ -171,10 +184,6 @@ def get_match_state(matchId: str):
     start = match[7]
     duration = match[8]
 
-    # ===============================
-    # VALIDATIONS
-    # ===============================
-
     if state != "ACTIVE":
         return {"error": "not active"}
 
@@ -184,26 +193,14 @@ def get_match_state(matchId: str):
     if int(time.time()*1000) > start + duration*1000:
         return {"error": "time over"}
 
-    # ===============================
-    # PLAYER CHECK
-    # ===============================
-
     if data.playerId not in [player_a, player_b]:
         return {"error": "invalid player"}
-
-    # ===============================
-    # DUPLICATE PROTECTION
-    # ===============================
 
     if data.playerId == player_a and art_a:
         return {"error": "already submitted"}
 
     if data.playerId == player_b and art_b:
         return {"error": "already submitted"}
-
-    # ===============================
-    # SAVE ART
-    # ===============================
 
     if data.playerId == player_a:
         cur.execute(
@@ -218,10 +215,6 @@ def get_match_state(matchId: str):
 
     conn.commit()
 
-    # ===============================
-    # CHECK BOTH SUBMITTED
-    # ===============================
-
     cur.execute(
         "SELECT art_a, art_b, state FROM matches WHERE match_id=%s",
         (data.matchId,)
@@ -229,20 +222,17 @@ def get_match_state(matchId: str):
     artA, artB, current_state = cur.fetchone()
 
     if artA and artB and current_state == "ACTIVE":
-
-        # move to judging ONLY ONCE
         cur.execute("""
         UPDATE matches
         SET state='JUDGING'
         WHERE match_id=%s AND state='ACTIVE'
         """, (data.matchId,))
-
         conn.commit()
 
-        # push to worker queue
         await QUEUE.put(data.matchId)
 
     return {"status": "ok"}
+
 
 # ===============================
 # START WORKER
